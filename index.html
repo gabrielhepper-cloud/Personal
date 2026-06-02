@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fichaje Biométrico por DNI - Seguridad</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 15px; background-color: #eef2f3; text-align: center; }
+        .container { max-width: 450px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0px 4px 15px rgba(0,0,0,0.15); box-sizing: border-box; }
+        h2 { color: #333; margin-bottom: 5px; font-size: 22px; }
+        .servicio-tag { background: #343a40; color: #fff; padding: 5px 10px; border-radius: 5px; display: inline-block; font-size: 14px; margin-bottom: 15px; }
+        
+        .camera-container { position: relative; width: 100%; max-width: 320px; margin: 15px auto; background: #000; border-radius: 10px; overflow: hidden; aspect-ratio: 4/3; }
+        video { width: 100%; height: 100%; object-fit: cover; display: block; transform: scaleX(-1); } 
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: scaleX(-1); pointer-events: none; }
+        
+        button { background-color: #007bff; color: white; border: none; padding: 14px; font-size: 16px; border-radius: 6px; cursor: pointer; width: 100%; margin-top: 12px; font-weight: bold; }
+        button:hover { background-color: #0056b3; }
+        select, input { width: 100%; padding: 12px; margin-top: 10px; font-size: 16px; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box; }
+        .hidden { display: none; }
+        .alert-box { background: #fff3cd; border: 2px solid #ffeeba; padding: 20px; border-radius: 8px; margin-top: 20px; color: #856404; }
+        .status-loading { color: #ffc107; font-weight: bold; margin: 10px 0; font-size: 14px; }
+        hr { border: 0; height: 1px; background: #eee; margin: 20px 0; }
+
+        #canvas-registro { display: none; width: 100%; max-width: 200px; margin: 15px auto; border: 2px solid #28a745; border-radius: 6px; transform: scaleX(-1); }
+        
+        .alert-error-activo { background: #f8d7da; border: 2px solid #f5c6cb; padding: 15px; border-radius: 8px; margin-top: 15px; color: #721c24; text-align: center; }
+        .alert-exito-fichaje { background: #d4edda; border: 2px solid #c3e6cb; padding: 15px; border-radius: 8px; margin-top: 15px; color: #155724; text-align: center; }
+    </style>
+
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+</head>
+<body>
+
+<div class="container">
+    <h2 id="titulo-servicio">Iniciando Sistema...</h2>
+    <div id="tag-servicio" class="servicio-tag hidden"></div>
+
+    <div id="seccion-config" class="hidden">
+        <p>Dispositivo nuevo. Ingresá el nombre asignado a este objetivo:</p>
+        <input type="text" id="input-servicio" placeholder="Ej: Las Glorias">
+        <button onclick="guardarServicio()">Fijar Celular a este Servicio</button>
+    </div>
+
+    <div id="seccion-fichaje" class="hidden">
+        <div id="status-libreria" class="status-loading">Cargando módulos de IA...</div>
+        
+        <div class="camera-container">
+            <video id="video" autoplay muted playsinline></video>
+            <canvas id="overlay"></canvas>
+        </div>
+        
+        <button id="btn-escanear-manual" onclick="ejecutarEscaneoManual()">🔍 Iniciar Escaneo de Rostro</button>
+        <p id="texto-guia" style="color: #666; font-size: 14px; margin-top: 10px;">Párate frente a la cámara y presiona el botón para registrar tu entrada.</p>
+
+        <div id="bloque-ya-activo" class="alert-error-activo hidden">
+            <h3 style="margin-top: 0;">⚠️ Acceso Denegado</h3>
+            <p id="texto-error-activo"></p>
+            <button id="btn-salida-anticipada" onclick="finalizarTurnoAnticipado()" style="background-color: #dc3545; margin-top: 10px; font-size: 14px;">⚠️ Finalizar Turno Ahora (Salida Anticipada)</button>
+            <button onclick="cancelarFlujoFichaje()" style="background-color: #6c757d; margin-top: 8px; padding: 8px; font-size: 14px;">Volver Atrás</button>
+        </div>
+
+        <div id="bloque-exito-fichaje" class="alert-exito-fichaje hidden">
+            <h3 style="margin-top: 0;">✔ Ingreso Registrado</h3>
+            <p id="texto-exito-fichaje"></p>
+            <p style="font-size: 12px; color: #155724; font-style: italic;">La pantalla se reiniciará automáticamente en 3 segundos...</p>
+            <button onclick="cancelarFlujoFichaje()" style="background-color: #28a745; margin-top: 5px; padding: 8px; font-size: 14px;">Volver al Inicio Ahora</button>
+        </div>
+
+        <div id="proceso-ingreso" class="hidden" style="background: #e2f0d9; padding: 15px; border-radius: 8px; margin-top: 15px; border: 1px solid #bcdca7;">
+            <h3 id="nombre-empleado" style="color: #2b541a; margin-top: 0;">¡Rostro Detectado!</h3>
+            <label for="select-horas"><b>¿Cuántas horas vas a trabajar hoy?</b></label>
+            <select id="select-horas">
+                <option value="8">8 Horas</option>
+                <option value="10">10 Horas</option>
+                <option value="12" selected>12 Horas</option>
+                <option value="24">24 Horas</option>
+            </select>
+            <button onclick="confirmarIngreso()" style="background-color: #28a745;">Confirmar Ingreso al Servicio</button>
+        </div>
+    </div>
+
+    <div id="alerta-turno" class="alert-box hidden">
+        <h3 style="margin-top:0;">⚠️ Fin de Jornada</h3>
+        <p id="texto-alerta">El tiempo estimado concluyó.</p>
+        <button onclick="extenderTurno()" style="background-color: #ffc107; color: black; margin-bottom: 8px;">Sumar +1 Hora Trabajo (No llegó relevo)</button>
+        <button onclick="finalizarTurnoTotal()" style="background-color: #dc3545;">Finalizar Turno y Cerrar Horas</button>
+    </div>
+
+    <div id="seccion-admin" class="hidden" style="background: #fff; padding: 15px; border-radius: 12px; margin-top: 10px; border: 2px dashed #007bff; box-sizing: border-box;">
+        <h3 style="margin-top: 0;">Gestión de Personal</h3>
+        <hr>
+        
+        <div style="text-align: left;">
+            <h4 style="margin-bottom: 5px; color: #007bff;">➕ Alta de Vigilador Nuevo</h4>
+            <label><b>Número de DNI:</b></label>
+            <input type="number" id="admin-dni" placeholder="Ej: 26052576">
+            
+            <label><b>Nombre y Apellido Completo:</b></label>
+            <input type="text" id="admin-nombre" placeholder="Ej: Gabriel Hepper">
+            
+            <p style="font-size:13px; color:#555; margin-top:12px; margin-bottom:8px;">Ubicá el rostro centrado en la cámara de arriba y capturá la foto:</p>
+            <button onclick="capturarFotoRegistro()" style="background-color: #17a2b8;">📸 Capturar Foto de Rostro</button>
+            
+            <canvas id="canvas-registro"></canvas>
+            
+            <button onclick="guardarEmpleadoNuevo()" style="background-color: #28a745; margin-top:20px;">💾 Guardar en Base de Datos</button>
+        </div>
+        
+        <hr>
+
+        <div style="text-align: left;">
+            <h4 style="margin-bottom: 5px; color: #dc3545;">❌ Baja de Personal</h4>
+            <label><b>Número de DNI a eliminar:</b></label>
+            <input type="number" id="admin-baja-dni" placeholder="Ej: 34567890">
+            <button onclick="darDeBajaEmpleado()" style="background-color: #dc3545; margin-top:10px;">⚠️ Eliminar de Forma Permanente</button>
+        </div>
+
+        <button onclick="cerrarPanelAdmin()" style="background-color: #6c757d; margin-top:25px;">Volver al Fichador</button>
+    </div>
+</div>
+
+<button onclick="abrirPanelAdmin()" style="background-color: #6c757d; font-size: 13px; padding: 6px 12px; width: auto; position: fixed; bottom: 10px; right: 10px; opacity: 0.7; border: none; color: white; border-radius: 4px; cursor: pointer; z-index: 9999;">
+    ⚙️ Admin
+</button>
+
+<script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyBXLpZmItlyuMYAZlekKsQQ6_qoVVVII3o",
+      authDomain: "control-presentismo-seguridad.firebaseapp.com",
+      projectId: "control-presentismo-seguridad",
+      storageBucket: "control-presentismo-seguridad.firebasestorage.app",
+      messagingSenderId: "767400724744",
+      appId: "1:767400724744:web:3c049462001dd716a3c4bd",
+      measurementId: "G-KWLS6THR74"
+    };
+    
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+    
+    let nombreServicio = localStorage.getItem("nombreServicio");
+    let empleadoActual = null;
+    let idFichajeActual = null;
+    let idFichajeActivoRemoto = null; // Guarda el ID del fichaje abierto para la salida anticipada
+    let modelosCargados = false;
+    let fotoBase64Nueva = null;
+    let temporizadorExito = null;
+
+    window.onload = async function() {
+        if (!nombreServicio) {
+            document.getElementById("titulo-servicio").innerText = "Configuración de Terminal";
+            document.getElementById("seccion-config").classList.remove("hidden");
+        } else {
+            await iniciarFlujoFichaje();
+        }
+    };
+
+    function guardarServicio() {
+        let nombre = document.getElementById("input-servicio").value.trim();
+        if(nombre !== "") {
+            localStorage.setItem("nombreServicio", nombre);
+            nombreServicio = nombre;
+            iniciarFlujoFichaje();
+        }
+    }
+
+    async function iniciarFlujoFichaje() {
+        document.getElementById("titulo-servicio").innerText = "Control de Acceso";
+        document.getElementById("tag-servicio").innerText = "Objetivo: " + nombreServicio;
+        document.getElementById("tag-servicio").classList.remove("hidden");
+        document.getElementById("seccion-config").classList.add("hidden");
+        document.getElementById("seccion-fichaje").classList.remove("hidden");
+        
+        await cargarModelosFaceApi();
+        await encenderCamara();
+    }
+
+    async function cargarModelosFaceApi() {
+        try {
+            const MODEL_URL = 'https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights';
+            await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+            await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+            await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+            modelosCargados = true;
+            document.getElementById("status-libreria").innerText = "Conectado y listo.";
+            setTimeout(() => { document.getElementById("status-libreria").classList.add("hidden"); }, 1000);
+        } catch (error) {
+            document.getElementById("status-libreria").innerText = "Error cargando IA. Verifique conexión.";
+            console.error(error);
+        }
+    }
+
+    async function encenderCamara() {
+        const video = document.getElementById('video');
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } } 
+            });
+            video.srcObject = stream;
+        } catch (err) {
+            alert("No se pudo acceder a la cámara: " + err);
+        }
+    }
+
+    async function ejecutarEscaneoManual() {
+        if (!modelosCargados) {
+            alert("El sistema de reconocimiento aún está cargando. Aguarde un segundo.");
+            return;
+        }
+
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('overlay');
+        const btnEscanear = document.getElementById('btn-escanear-manual');
+        const displaySize = { width: video.clientWidth, height: video.clientHeight };
+        
+        faceapi.matchDimensions(canvas, displaySize);
+        btnEscanear.innerText = "⚡ Analizando Rostro...";
+        btnEscanear.disabled = true;
+
+        const detections = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceDescriptor();
+        
+        if (detections) {
+            canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+            faceapi.draw.drawDetections(canvas, faceapi.resizeResults(detections, displaySize));
+
+            btnEscanear.innerText = "🔍 Identificando Rostro...";
+            
+            db.collection("empleados").get().then((querySnapshot) => {
+                let empleadoEncontrado = null;
+                
+                querySnapshot.forEach((doc) => {
+                    if (!empleadoEncontrado) {
+                        empleadoEncontrado = doc.data(); 
+                    }
+                });
+
+                if (!empleadoEncontrado) {
+                    alert("Rostro detectado pero no está registrado en el sistema. Vaya a Admin.");
+                    restablecerBotonEscaneo();
+                    return;
+                }
+
+                btnEscanear.innerText = "🛡️ Validando Estado...";
+                
+                db.collection("fichajes")
+                  .where("dni", "==", empleadoEncontrado.dni)
+                  .where("estado", "==", "activo")
+                  .get()
+                  .then((fichajeSnapshot) => {
+                      
+                      if (!fichajeSnapshot.empty) {
+                          // El vigilador ya está activo
+                          let docFichaje = fichajeSnapshot.docs[0];
+                          let datosServicioActivo = docFichaje.data();
+                          idFichajeActivoRemoto = docFichaje.id; // Guardamos el ID del documento para poder borrar/finalizar
+                          empleadoActual = { dni: empleadoEncontrado.dni, nombre: empleadoEncontrado.nombre };
+
+                          document.getElementById("texto-error-activo").innerHTML = 
+                              `El vigilador <b>${empleadoEncontrado.nombre}</b> ya se encuentra cubriendo un turno activo en el objetivo: <br><br>🚨 <b>"${datosServicioActivo.servicio}"</b><br><br>Ingresó a las: ${datosServicioActivo.hora_ingreso} hs.`;
+                          
+                          btnEscanear.classList.add("hidden");
+                          document.getElementById("texto-guia").classList.add("hidden");
+                          document.getElementById("bloque-ya-activo").classList.remove("hidden");
+                      } else {
+                          // Está libre, va al ingreso regular
+                          btnEscanear.classList.add("hidden");
+                          document.getElementById("texto-guia").classList.add("hidden");
+                          resolverCoincidenciaFacial(empleadoEncontrado.dni, empleadoEncontrado.nombre);
+                      }
+                  })
+                  .catch((err) => {
+                      alert("Error al verificar estado de turnos: " + err);
+                      restablecerBotonEscaneo();
+                  });
+
+            }).catch((error) => {
+                alert("Error al conectar con empleados: " + error);
+                restablecerBotonEscaneo();
+            });
+
+        } else {
+            alert("No se detectó ningún rostro. Centrá tu cara e intentalo de nuevo.");
+            restablecerBotonEscaneo();
+        }
+    }
+
+    // NUEVA FUNCIÓN: Permite cortar el turno antes de tiempo desde el cartel de bloqueo
+    function finalizarTurnoAnticipado() {
+        if (!idFichajeActivoRemoto) return;
+        
+        let seguro = confirm(`¿Confirmar SALIDA ANTICIPADA para el vigilador ${empleadoActual.nombre}? Se cerrará su jornada laboral ahora.`);
+        if (seguro) {
+            db.collection("fichajes").doc(idFichajeActivoRemoto).update({
+                estado: "finalizado",
+                hora_egreso_anticipado: new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+            }).then(() => {
+                alert("Turno finalizado antes de tiempo. El vigilador ya quedó liberado en el sistema.");
+                idFichajeActivoRemoto = null;
+                cancelarFlujoFichaje();
+            }).catch((err) => {
+                alert("Error al cerrar el turno anticipado: " + err);
+            });
+        }
+    }
+
+    function cancelarFlujoFichaje() {
+        // Limpiamos los bloques informativos y reseteamos variables
+        if (temporizadorExito) clearTimeout(temporizadorExito);
+        
+        document.getElementById("bloque-ya-activo").classList.add("hidden");
+        document.getElementById("bloque-exito-fichaje").classList.add("hidden");
+        document.getElementById("proceso-ingreso").classList.add("hidden");
+        
+        document.getElementById("btn-escanear-manual").classList.remove("hidden");
+        document.getElementById("texto-guia").classList.remove("hidden");
+        
+        idFichajeActivoRemoto = null;
+        empleadoActual = null;
+        restablecerBotonEscaneo();
+    }
+
+    function restablecerBotonEscaneo() {
+        const btnEscanear = document.getElementById('btn-escanear-manual');
+        const canvas = document.getElementById('overlay');
+        btnEscanear.innerText = "🔍 Iniciar Escaneo de Rostro";
+        btnEscanear.disabled = false;
+        if(canvas.getContext('2d')) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    function resolverCoincidenciaFacial(dni, nombreCompleto) {
+        empleadoActual = { dni: dni, nombre: nombreCompleto };
+        document.getElementById("nombre-empleado").innerText = `Vigilador: ${empleadoActual.nombre} (DNI: ${empleadoActual.dni})`;
+        document.getElementById("proceso-ingreso").classList.remove("hidden");
+    }
+
+    function confirmarIngreso() {
+        let horasSeleccionadas = parseInt(document.getElementById("select-horas").value);
+        let hoy = new Date().toISOString().split('T')[0];
+        let horaAhora = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+
+        let nuevoFichaje = {
+            dni: empleadoActual.dni,
+            nombre: empleadoActual.nombre,
+            servicio: nombreServicio,
+            fecha: hoy,
+            hora_ingreso: horaAhora,
+            horas_estimadas: horasSeleccionadas,
+            horas_reales: horasSeleccionadas, 
+            estado: "activo"
+        };
+
+        db.collection("fichajes").add(nuevoFichaje).then((docRef) => {
+            idFichajeActual = docRef.id;
+            
+            // Ocultamos la carga de horas
+            document.getElementById("proceso-ingreso").classList.add("hidden");
+            
+            // Mostramos el bloque de éxito con la información registrada
+            document.getElementById("texto-exito-fichaje").innerHTML = 
+                `<b>Vigilador:</b> ${empleadoActual.nombre}<br><b>Objetivo:</b> ${nombreServicio}<br><b>Jornada:</b> ${horasSeleccionadas} Horas<br><b>Hora Ingreso:</b> ${horaAhora} hs.`;
+            document.getElementById("bloque-exito-fichaje").classList.remove("hidden");
+            
+            // NUEVO: Temporizador automático de 3 segundos para volver al inicio
+            temporizadorExito = setTimeout(() => {
+                cancelarFlujoFichaje();
+            }, 3000);
+
+        }).catch((err) => {
+            alert("Error al registrar fichaje: " + err);
+            cancelarFlujoFichaje();
+        });
+    }
+
+    function esperarFinDeTurno(horas) {
+        document.getElementById("texto-alerta").innerText = `El turno de ${empleadoActual ? empleadoActual.nombre : "Vigilador"} finalizó (${horas} hs). ¿Agregar 1 hora por falta de relevo o finalizar servicio?`;
+        document.getElementById("alerta-turno").classList.remove("hidden");
+    }
+
+    function extenderTurno() {
+        db.collection("fichajes").doc(idFichajeActual).get().then((doc) => {
+            if (doc.exists) {
+                let horasAcumuladas = doc.data().horas_reales;
+                let nuevasHoras = horasAcumuladas + 1;
+
+                db.collection("fichajes").doc(idFichajeActual).update({
+                    horas_reales: nuevasHoras
+                }).then(() => {
+                    alert("Se ha adicionado 1 hora entera al registro.");
+                    esperarFinDeTurno(nuevasHoras);
+                });
+            }
+        });
+    }
+
+    function finalizarTurnoTotal() {
+        db.collection("fichajes").doc(idFichajeActual).update({
+            estado: "finalizado"
+        }).then(() => {
+            alert("Turno cerrado correctamente. Vigilador liberado.");
+            document.getElementById("alerta-turno").classList.add("hidden");
+            idFichajeActual = null;
+            empleadoActual = null;
+        });
+    }
+
+    // --- PANEL DE GESTIÓN (ADMIN) ---
+    function abrirPanelAdmin() {
+        let clave = prompt("Ingrese la clave de Supervisor para administrar personal:");
+        if (clave === "1234") { 
+            const contenedorCamara = document.querySelector('.camera-container');
+            const seccionAdmin = document.getElementById('seccion-admin');
+            seccionAdmin.insertBefore(contenedorCamara, seccionAdmin.firstChild);
+
+            document.getElementById("seccion-fichaje").classList.add("hidden");
+            seccionAdmin.classList.remove("hidden");
+        } else {
+            alert("Clave incorrecta. Acceso denegado.");
+        }
+    }
+
+    function cerrarPanelAdmin() {
+        const contenedorCamara = document.querySelector('.camera-container');
+        const seccionFichaje = document.getElementById('seccion-fichaje');
+        seccionFichaje.insertBefore(contenedorCamara, seccionFichaje.firstChild);
+
+        document.getElementById("seccion-admin").classList.add("hidden");
+        seccionFichaje.classList.remove("hidden");
+        cancelarFlujoFichaje();
+    }
+
+    function capturarFotoRegistro() {
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas-registro');
+        const context = canvas.getContext('2d');
+        
+        canvas.width = 320;
+        canvas.height = 240;
+        
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.style.display = "block"; 
+        
+        fotoBase64Nueva = canvas.toDataURL('image/jpeg');
+        alert("Foto capturada correctamente. Verifique la vista previa abajo.");
+    }
+
+    function guardarEmpleadoNuevo() {
+        let dni = document.getElementById("admin-dni").value.trim();
+        let nombre = document.getElementById("admin-nombre").value.trim();
+        
+        if (dni === "" || nombre === "") {
+            alert("Por favor, ingrese el DNI y el Nombre Completo.");
+            return;
+        }
+        if (!fotoBase64Nueva) {
+            alert("Debe capturar la foto del rostro antes de guardar.");
+            return;
+        }
+
+        db.collection("empleados").doc(dni).set({
+            nombre: nombre,
+            dni: dni,
+            foto_rostro: fotoBase64Nueva,
+            fecha_alta: new Date().toISOString().split('T')[0]
+        })
+        .then(() => {
+            alert(`¡Vigilador ${nombre} (DNI: ${dni}) dado de alta con éxito!`);
+            document.getElementById("admin-dni").value = "";
+            document.getElementById("admin-nombre").value = "";
+            document.getElementById("canvas-registro").style.display = "none";
+            fotoBase64Nueva = null;
+            cerrarPanelAdmin();
+        })
+        .catch((error) => {
+            alert("Error al guardar en Firebase: " + error);
+        });
+    }
+
+    function darDeBajaEmpleado() {
+        let dni = document.getElementById("admin-baja-dni").value.trim();
+        if (dni === "") {
+            alert("Por favor, ingrese un número de DNI válido.");
+            return;
+        }
+        
+        let confirmar = confirm(`¿Está seguro de que desea eliminar al empleado con DNI ${dni}?`);
+        if (confirmar) {
+            db.collection("empleados").doc(dni).delete()
+            .then(() => {
+                alert(`El DNI ${dni} fue borrado del sistema exitosamente.`);
+                document.getElementById("admin-baja-dni").value = "";
+                cerrarPanelAdmin();
+            })
+            .catch((error) => {
+                alert("Error al eliminar de la base de datos: " + error);
+            });
+        }
+    }
+</script>
+</body>
+</html>
